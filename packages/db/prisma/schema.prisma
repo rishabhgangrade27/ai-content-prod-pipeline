@@ -1,0 +1,164 @@
+// Prisma schema for the AI Content Production Pipeline.
+// pgvector / BriefEmbedding (RAG memory) is deferred to Stage 9 of the build plan.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum JobFormat {
+  VERTICAL
+  LANDSCAPE
+  BOTH
+}
+
+enum JobStatus {
+  QUEUED
+  PLANNING
+  GENERATING
+  RENDERING
+  QA
+  REVIEW
+  APPROVED
+  REJECTED
+  DELIVERED
+  FAILED
+}
+
+enum SceneStatus {
+  PENDING
+  SCRIPTED
+  ASSETS_READY
+  FAILED
+}
+
+enum AssetType {
+  IMAGE
+  VIDEO
+  AUDIO
+  MUSIC
+  FINAL
+}
+
+enum AssetStatus {
+  PENDING
+  GENERATING
+  READY
+  FAILED
+}
+
+enum AttemptVerdict {
+  PASS
+  FAIL
+}
+
+enum ReviewDecision {
+  APPROVED
+  REJECTED
+}
+
+model Job {
+  id             String    @id @default(cuid())
+  brief          String
+  script         String?
+  format         JobFormat @default(VERTICAL)
+  status         JobStatus @default(QUEUED)
+  deliveryTarget String?
+  webhookUrl     String?
+  latestError    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  scenes     Scene[]
+  assets     Asset[]
+  attempts   Attempt[]
+  reviews    Review[]
+  costEvents CostEvent[]
+
+  @@map("jobs")
+}
+
+model Scene {
+  id           String      @id @default(cuid())
+  jobId        String
+  job          Job         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  order        Int
+  scriptText   String?
+  visualPrompt String?
+  status       SceneStatus @default(PENDING)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  assets Asset[]
+
+  @@unique([jobId, order])
+  @@map("scenes")
+}
+
+model Asset {
+  id        String      @id @default(cuid())
+  jobId     String
+  job       Job         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sceneId   String?
+  scene     Scene?      @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  type      AssetType
+  provider  String?
+  /// Wherever the asset actually lives: the provider's own hosted URL (fal.ai
+  /// images, Freesound previews) when they already host it durably, or our
+  /// own MinIO/S3 URL for content we generate as raw bytes (TTS audio, the
+  /// final render).
+  url       String?
+  status    AssetStatus @default(PENDING)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@map("assets")
+}
+
+/// Durable retry-gate history — one row per QA/regeneration attempt.
+/// This replaces the flat-JSON-checkpoint pattern seen in the reference repos
+/// with a queryable table, per the build plan's review_gate() design.
+model Attempt {
+  id            String          @id @default(cuid())
+  jobId         String
+  job           Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  gateName      String
+  subjectType   String
+  subjectId     String
+  attemptNumber Int
+  verdict       AttemptVerdict?
+  feedback      String?
+  costUsd       Decimal?        @db.Decimal(10, 4)
+  createdAt     DateTime        @default(now())
+
+  @@map("attempts")
+}
+
+model Review {
+  id        String         @id @default(cuid())
+  jobId     String
+  job       Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reviewer  String
+  decision  ReviewDecision
+  comment   String?
+  createdAt DateTime       @default(now())
+
+  @@map("reviews")
+}
+
+model CostEvent {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  stage       String
+  provider    String
+  units       Decimal  @db.Decimal(12, 4)
+  usdEstimate Decimal  @db.Decimal(10, 4)
+  createdAt   DateTime @default(now())
+
+  @@map("cost_events")
+}

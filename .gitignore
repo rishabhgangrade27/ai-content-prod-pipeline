@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Prisma generated client (regenerated via `npm run prisma:generate`)
+packages/db/generated/
+
+# Next.js
+apps/dashboard/.next/
+
+.claude/
+
+# Reference-only repos used for research during Phase One analysis — never
+# part of this project's own codebase. Several have no license or an
+# explicitly restrictive one; must not enter this repo's history.
+/agentcut/
+/ai-video-factory/
+/ai-video-production-system/
+/n8n-automated-storytelling/
+/video-factory/
+/youtube-shorts-factory/

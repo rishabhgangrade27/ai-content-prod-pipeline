@@ -9,6 +9,9 @@ import { QUEUE_NAMES } from "../queues.js";
 import { downloadToFile } from "../render/download.js";
 import { padToLandscape } from "../render/pad-landscape.js";
 import { renderVariant, type RenderScene } from "../render/pipeline.js";
+import { getDurationSeconds } from "../render/ffprobe.js";
+import { reviewGate, ReviewGateError, failJobFromQA } from "../qa/review-gate.js";
+import { validateVideo } from "../qa/validators.js";
 import type { Redis } from "ioredis";
 
 export interface RenderJobData {
@@ -43,7 +46,10 @@ export function createRenderWorker(connection: Redis) {
 
       const dbJob = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
       if (dbJob.status === "FAILED") {
-        throw new Error(`Job ${jobId} already failed upstream — skipping render`);
+        // Already terminal (e.g. an upstream QA gate exhausted its retries) —
+        // nothing to retry here, and re-throwing would just relitigate that
+        // failure under this gate's name and overwrite the original reason.
+        return { skipped: true };
       }
 
       const scenes = await prisma.scene.findMany({
@@ -57,6 +63,8 @@ export function createRenderWorker(connection: Redis) {
 
       const musicAsset = await prisma.asset.findFirst({ where: { jobId, type: "MUSIC" } });
 
+      await prisma.job.update({ where: { id: jobId }, data: { status: "QA" } });
+
       const workDir = path.join(os.tmpdir(), "pipeline-render", jobId);
       await mkdir(workDir, { recursive: true });
 
@@ -64,6 +72,7 @@ export function createRenderWorker(connection: Redis) {
         // Download each scene's source image once — reused as-is for the
         // native-orientation pass, padded (not re-downloaded) for the other.
         const originals: Array<{ order: number; narration: string; audioUrl: string; originalImagePath: string }> = [];
+        let expectedDuration = 0;
         for (const scene of scenes) {
           const imageAsset = scene.assets.find((a) => a.type === "IMAGE");
           const audioAsset = scene.assets.find((a) => a.type === "AUDIO");
@@ -72,6 +81,7 @@ export function createRenderWorker(connection: Redis) {
           }
           const originalImagePath = path.join(workDir, `source-${scene.order}.jpg`);
           await downloadToFile(imageAsset.url, originalImagePath);
+          expectedDuration += await getDurationSeconds(audioAsset.url);
           originals.push({
             order: scene.order,
             narration: scene.scriptText ?? "",
@@ -98,14 +108,32 @@ export function createRenderWorker(connection: Redis) {
             });
           }
 
-          const finalLocalPath = await renderVariant({
-            workDir,
-            variantTag: variant.tag,
-            width: variant.width,
-            height: variant.height,
-            scenes: renderScenes,
-            musicUrl: musicAsset?.url,
-          });
+          let finalLocalPath: string;
+          try {
+            finalLocalPath = await reviewGate({
+              jobId,
+              gateName: "render_qa",
+              subjectType: "job",
+              subjectId: jobId,
+              maxAttempts: 2,
+              attempt: () =>
+                renderVariant({
+                  workDir,
+                  variantTag: variant.tag,
+                  width: variant.width,
+                  height: variant.height,
+                  scenes: renderScenes,
+                  musicUrl: musicAsset?.url,
+                }),
+              validate: (localPath) => validateVideo(localPath, variant.width, variant.height, expectedDuration),
+            });
+          } catch (err) {
+            if (err instanceof ReviewGateError) {
+              await failJobFromQA(jobId, err);
+              return { failed: true, reason: err.message };
+            }
+            throw err;
+          }
 
           const buffer = await readFile(finalLocalPath);
           const uploaded = await storage.uploadBuffer(
@@ -120,7 +148,7 @@ export function createRenderWorker(connection: Redis) {
           finalAssetUrls.push(uploaded.url);
         }
 
-        await prisma.job.update({ where: { id: jobId }, data: { status: "QA" } });
+        await prisma.job.update({ where: { id: jobId }, data: { status: "REVIEW" } });
 
         return { finalAssetUrls };
       } finally {

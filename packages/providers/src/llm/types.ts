@@ -14,8 +14,10 @@ export type Scene = z.infer<typeof SceneSchema>;
 export type SceneBreakdown = z.infer<typeof SceneBreakdownSchema>;
 
 export interface LLMProvider {
-  /** Generate a short marketing/ad script (~150 words) from a creative brief. */
-  generateScript(brief: string): Promise<string>;
+  /** Generate a short marketing/ad script (~150 words) from a creative brief.
+   * `feedback`, when present, comes from a failed QA check on a prior attempt
+   * (Stage 5's review_gate()) and should be treated as a correction. */
+  generateScript(brief: string, feedback?: string): Promise<string>;
 
   /** Break a script into an ordered list of scenes with narration + visual prompts. */
   generateSceneBreakdown(brief: string, script: string): Promise<SceneBreakdown>;

@@ -4,6 +4,8 @@ import { createLLMProvider } from "@pipeline/providers";
 import { attachAttemptLogging } from "../attempt-logging.js";
 import { recordCostEvent, estimateLLMCostUsd } from "../costs.js";
 import { QUEUE_NAMES, RETRY_OPTS } from "../queues.js";
+import { reviewGate, ReviewGateError, failJobFromQA } from "../qa/review-gate.js";
+import { validateScript } from "../qa/validators.js";
 import type { Redis } from "ioredis";
 
 export interface ScriptJobData {
@@ -24,7 +26,24 @@ export function createScriptWorker(connection: Redis) {
         data: { status: "PLANNING" },
       });
 
-      const script = await llm.generateScript(dbJob.brief);
+      let script: string;
+      try {
+        script = await reviewGate({
+          jobId,
+          gateName: "script_qa",
+          subjectType: "job",
+          subjectId: jobId,
+          maxAttempts: 2,
+          attempt: (feedback) => llm.generateScript(dbJob.brief, feedback ?? undefined),
+          validate: (candidate) => Promise.resolve(validateScript(candidate)),
+        });
+      } catch (err) {
+        if (err instanceof ReviewGateError) {
+          await failJobFromQA(jobId, err);
+          return { failed: true, reason: err.message };
+        }
+        throw err;
+      }
 
       await recordCostEvent(
         jobId,

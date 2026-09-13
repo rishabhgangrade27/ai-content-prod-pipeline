@@ -12,7 +12,11 @@ export class ClaudeLLMProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey });
   }
 
-  async generateScript(brief: string): Promise<string> {
+  async generateScript(brief: string, feedback?: string): Promise<string> {
+    const userContent = feedback
+      ? `Brief: ${brief}\n\nYour previous attempt failed automated QA: ${feedback}\nWrite a new script that fixes this.`
+      : brief;
+
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: 1024,
@@ -20,7 +24,7 @@ export class ClaudeLLMProvider implements LLMProvider {
         "You write short-form vertical video ad scripts (UGC/product-highlight style). " +
         "Write a single ~150-word voiceover script for the given brief. Punchy, conversational, " +
         "no scene directions, no headings — just the spoken words.",
-      messages: [{ role: "user", content: brief }],
+      messages: [{ role: "user", content: userContent }],
     });
 
     const textBlock = response.content.find(

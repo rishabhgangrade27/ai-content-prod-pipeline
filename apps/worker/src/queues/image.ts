@@ -4,6 +4,8 @@ import { createImageProvider } from "@pipeline/providers";
 import { attachAttemptLogging } from "../attempt-logging.js";
 import { recordCostEvent, imageCostUsd } from "../costs.js";
 import { QUEUE_NAMES } from "../queues.js";
+import { reviewGate, ReviewGateError, failJobFromQA } from "../qa/review-gate.js";
+import { validateImage } from "../qa/validators.js";
 import type { Redis } from "ioredis";
 
 export interface ImageJobData {
@@ -14,6 +16,11 @@ export interface ImageJobData {
   height: number;
 }
 
+function orientationOf(width: number, height: number): "portrait" | "landscape" | "square" {
+  if (width === height) return "square";
+  return width < height ? "portrait" : "landscape";
+}
+
 export function createImageWorker(connection: Redis) {
   const imageProvider = createImageProvider();
 
@@ -21,8 +28,31 @@ export function createImageWorker(connection: Redis) {
     QUEUE_NAMES.image,
     async (job: Job<ImageJobData>) => {
       const { jobId, sceneId, prompt, width, height } = job.data;
+      const orientation = orientationOf(width, height);
 
-      const result = await imageProvider.generateImage({ prompt, width, height });
+      let result: Awaited<ReturnType<typeof imageProvider.generateImage>>;
+      try {
+        result = await reviewGate({
+          jobId,
+          gateName: "image_qa",
+          subjectType: "scene",
+          subjectId: sceneId,
+          maxAttempts: 2,
+          attempt: (feedback) =>
+            imageProvider.generateImage({
+              prompt: feedback ? `${prompt}. (${feedback}, keep it safe-for-work)` : prompt,
+              width,
+              height,
+            }),
+          validate: (candidate) => validateImage(candidate.url, candidate.flagged, orientation),
+        });
+      } catch (err) {
+        if (err instanceof ReviewGateError) {
+          await failJobFromQA(jobId, err);
+          return { failed: true, reason: err.message };
+        }
+        throw err;
+      }
 
       await prisma.asset.create({
         data: {

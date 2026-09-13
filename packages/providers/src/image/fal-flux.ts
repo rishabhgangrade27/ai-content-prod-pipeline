@@ -22,7 +22,7 @@ export class FalFluxImageProvider implements ImageProvider {
     if (!image) {
       throw new Error("fal.ai FLUX schnell returned no images");
     }
-    return { url: image.url, provider: MODEL_ID };
+    return { url: image.url, provider: MODEL_ID, flagged: result.data.has_nsfw_concepts[0] === true };
   }
 }
 

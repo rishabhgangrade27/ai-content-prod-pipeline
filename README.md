@@ -34,7 +34,28 @@ Full build plan and stage-by-stage roadmap: see the project's plan history. Curr
 
 - **Stage 6**: `apps/mcp-server` — a real MCP server (`@modelcontextprotocol/server` v2) exposing six tools (`create_job`, `get_job_status`, `list_pending_reviews`, `approve_review`, `reject_review`, `trigger_regeneration`) that a Claude client can call directly. Deliberately built as a thin API client, not a reimplementation — it calls `apps/api`'s own REST endpoints (including two new ones added for this stage: `POST /jobs/:id/review` and `POST /jobs/:id/regenerate`) rather than touching Postgres itself, so the MCP server, the REST API, and any future n8n workflow all go through the same business logic and validation. Verified with a real MCP client over stdio (`npx tsx src/smoke-test.ts` in `apps/mcp-server`) driving the full lifecycle against the live API and database — including the background worker picking up a regenerated job mid-test, and a deliberate error case (approving a job that isn't awaiting review) correctly surfacing as `isError: true` with the real API's message.
 
-Everything past that (n8n workflow, dashboard) is scaffolded in the repo layout but not yet implemented.
+- **Stage 7**: `n8n/workflows` — three n8n workflows making n8n the real front door, not a toy demo: **Main** (webhook trigger → creates a job via the API → acks immediately → bounded polling loop, max 40 tries, with real branching on `REVIEW`/`FAILED`/timeout, not a blind fixed wait), **Slack Actions** (a dedicated interactivity callback webhook — approve/reject buttons in the Slack message post back here, which calls the API's review endpoint and updates the original message), and **Error Handler** (an `errorTrigger`-based workflow, wired as both other workflows' `settings.errorWorkflow`, so any node failure anywhere gets reported to Slack automatically). Deliberately does **not** use n8n's built-in Slack "Send and Wait for Response" node — it has open bug reports about looping instead of resuming on exactly this kind of approve/reject flow, so the interactivity is hand-built with a second webhook instead, which is also a better demonstration of real n8n engineering than dropping in a canned node.
+
+  **Honest limitation:** this n8n instance already had an owner account set up from earlier work outside this session, and I didn't have those credentials — so unlike every other stage, this one is **not verified against a live n8n import**. The workflow JSON is syntax-valid and the node graph/expressions were hand-built as carefully as Stages 1-6's actual running code, but n8n's exact node parameter schemas (particularly the `if` node's filter shape) weren't confirmed against a live editor. Expect to need a short pass in the n8n UI after import — normal for hand-authored workflow JSON, not a sign anything is fundamentally wrong.
+
+Everything past that (dashboard) is scaffolded in the repo layout but not yet implemented.
+
+### Setting up the n8n workflows
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) with:
+   - Bot token scope `chat:write` → install to workspace → copy the `xoxb-...` bot token into `SLACK_BOT_TOKEN` in `.env`.
+   - **Interactivity & Shortcuts** enabled, Request URL set to `http://<your-n8n-host>:5678/webhook/slack-actions` (needs to be reachable from Slack — use a tunnel like `ngrok` for local dev, since Slack can't reach `localhost`).
+   - Set `SLACK_CHANNEL_ID` to the channel the bot should post to (invite the bot to that channel first).
+2. `docker compose up -d n8n` (already wired with `API_BASE_URL`/`SLACK_BOT_TOKEN`/`SLACK_CHANNEL_ID` from `.env`).
+3. In the n8n UI (`http://localhost:5678`): **Workflows → Import from File** for each of `n8n/workflows/01-content-pipeline.json`, `02-slack-actions.json`, `03-error-handler.json` (import the error handler first — the other two reference its workflow id).
+4. Open each imported workflow and publish/activate it (n8n 2.x uses a publish model, not the old active toggle — check for a "Publish" action if "Active" isn't present).
+5. Test the entry point without needing Slack at all:
+   ```bash
+   curl -X POST http://localhost:5678/webhook/create-job \
+     -H "Content-Type: application/json" \
+     -d '{"brief":"15s vertical UGC ad for a reusable water bottle","format":"VERTICAL"}'
+   ```
+   This should return immediately with a `jobId`, and the workflow keeps polling in the background — check `apps/api`'s job status endpoint or the n8n execution log to confirm it's progressing.
 
 ### Connecting to Claude Desktop
 
@@ -88,7 +109,7 @@ packages/
   db/             Prisma schema + generated client
   providers/      LLM/image/TTS/music provider abstraction (Claude, fal.ai, Google TTS, Freesound)
 n8n/
-  workflows/      (planned) exported n8n workflow JSON
+  workflows/      Main pipeline, Slack interactivity callback, error handler
 docker-compose.yml
 ```
 

@@ -67,8 +67,13 @@ services:
       N8N_HOST: ${N8N_HOST:-localhost}
       N8N_PORT: 5678
       N8N_PROTOCOL: http
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
       GENERIC_TIMEZONE: ${TZ:-UTC}
+      # apps/api runs on the host, not in this compose file — n8n (in Docker)
+      # reaches it via the host gateway, not localhost.
+      API_BASE_URL: ${N8N_API_BASE_URL:-http://host.docker.internal:3001}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_CHANNEL_ID: ${SLACK_CHANNEL_ID:-}
     ports:
       - "5678:5678"
     volumes:

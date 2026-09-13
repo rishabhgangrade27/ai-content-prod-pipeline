@@ -1,0 +1,267 @@
+{
+  "id": "content-pipeline-main",
+  "name": "AI Content Pipeline - Main",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "create-job",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-create-job",
+      "name": "Create Job Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "create-job"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/jobs",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ brief: $json.body.brief, format: $json.body.format || 'VERTICAL' }) }}",
+        "options": {}
+      },
+      "id": "http-create-job",
+      "name": "Create Job via API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ jobId: $json.id, status: $json.status, message: 'Job created — you will be notified in Slack when it needs review.' }) }}",
+        "options": {}
+      },
+      "id": "respond-ack",
+      "name": "Acknowledge Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.pollCount = 0;\nreturn [{ json: { jobId: $json.id } }];"
+      },
+      "id": "code-init-counter",
+      "name": "Init Poll Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "amount": 20,
+        "unit": "seconds"
+      },
+      "id": "wait-poll-delay",
+      "name": "Poll Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/jobs/{{$('Init Poll Counter').first().json.jobId}}",
+        "options": {}
+      },
+      "id": "http-get-status",
+      "name": "Get Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.pollCount = (staticData.pollCount || 0) + 1;\nconst job = $input.first().json;\nlet branch;\nif (job.status === 'REVIEW') branch = 'review';\nelse if (job.status === 'FAILED') branch = 'failed';\nelse if (staticData.pollCount >= 40) branch = 'timeout';\nelse branch = 'continue';\nreturn [{ json: { ...job, pollCount: staticData.pollCount, branch } }];"
+      },
+      "id": "code-evaluate-status",
+      "name": "Evaluate Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-review",
+              "leftValue": "={{$json.branch}}",
+              "rightValue": "review",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-is-review",
+      "name": "Is Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-failed",
+              "leftValue": "={{$json.branch}}",
+              "rightValue": "failed",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-is-failed",
+      "name": "Is Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2000, 460]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-timeout",
+              "leftValue": "={{$json.branch}}",
+              "rightValue": "timeout",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-is-timeout",
+      "name": "Is Timeout?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2220, 620]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.SLACK_BOT_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_ID, text: `Job ${$json.id} is ready for review: \"${$json.brief}\"`, blocks: [ { type: 'section', text: { type: 'mrkdwn', text: `*Job ready for review*\\n${$json.brief}\\n\\n*Script:*\\n${$json.script || '(none)'}` } }, { type: 'actions', elements: [ { type: 'button', text: { type: 'plain_text', text: '✅ Approve' }, style: 'primary', action_id: 'approve_job', value: $json.id }, { type: 'button', text: { type: 'plain_text', text: '❌ Reject' }, style: 'danger', action_id: 'reject_job', value: $json.id } ] } ] }) }}",
+        "options": {}
+      },
+      "id": "http-notify-review",
+      "name": "Notify Slack — Review Needed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.SLACK_BOT_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_ID, text: `:x: Job ${$json.id} failed: ${$json.latestError || '(no error message)'}` }) }}",
+        "options": {}
+      },
+      "id": "http-notify-failed",
+      "name": "Notify Slack — Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.SLACK_BOT_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_ID, text: `:hourglass: Job ${$json.id} is taking longer than expected (still \"${$json.status}\" after ${$json.pollCount} checks). Check get_job_status for details.` }) }}",
+        "options": {}
+      },
+      "id": "http-notify-timeout",
+      "name": "Notify Slack — Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 620]
+    }
+  ],
+  "connections": {
+    "Create Job Trigger": {
+      "main": [[{ "node": "Create Job via API", "type": "main", "index": 0 }]]
+    },
+    "Create Job via API": {
+      "main": [[{ "node": "Acknowledge Webhook", "type": "main", "index": 0 }]]
+    },
+    "Acknowledge Webhook": {
+      "main": [[{ "node": "Init Poll Counter", "type": "main", "index": 0 }]]
+    },
+    "Init Poll Counter": {
+      "main": [[{ "node": "Poll Delay", "type": "main", "index": 0 }]]
+    },
+    "Poll Delay": {
+      "main": [[{ "node": "Get Job Status", "type": "main", "index": 0 }]]
+    },
+    "Get Job Status": {
+      "main": [[{ "node": "Evaluate Status", "type": "main", "index": 0 }]]
+    },
+    "Evaluate Status": {
+      "main": [[{ "node": "Is Review?", "type": "main", "index": 0 }]]
+    },
+    "Is Review?": {
+      "main": [
+        [{ "node": "Notify Slack — Review Needed", "type": "main", "index": 0 }],
+        [{ "node": "Is Failed?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Failed?": {
+      "main": [
+        [{ "node": "Notify Slack — Failed", "type": "main", "index": 0 }],
+        [{ "node": "Is Timeout?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Timeout?": {
+      "main": [
+        [{ "node": "Notify Slack — Timeout", "type": "main", "index": 0 }],
+        [{ "node": "Poll Delay", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "content-pipeline-error-handler"
+  }
+}

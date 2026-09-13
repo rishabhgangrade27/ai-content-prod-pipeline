@@ -1,0 +1,90 @@
+{
+  "id": "content-pipeline-slack-actions",
+  "name": "AI Content Pipeline - Slack Actions",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slack-actions",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-slack-actions",
+      "name": "Slack Interactivity Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "slack-actions"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-ack-slack",
+      "name": "Acknowledge (within 3s)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst payload = JSON.parse(body.payload);\nconst action = payload.actions[0];\nreturn [{\n  json: {\n    jobId: action.value,\n    decision: action.action_id === 'approve_job' ? 'APPROVED' : 'REJECTED',\n    reviewer: payload.user?.username || payload.user?.name || payload.user?.id || 'unknown',\n    responseUrl: payload.response_url,\n  },\n}];"
+      },
+      "id": "code-parse-payload",
+      "name": "Parse Slack Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/jobs/{{$json.jobId}}/review",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ decision: $json.decision, reviewer: $json.reviewer }) }}",
+        "options": {}
+      },
+      "id": "http-submit-review",
+      "name": "Submit Review to API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$('Parse Slack Payload').first().json.responseUrl}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: ($('Parse Slack Payload').first().json.decision === 'APPROVED' ? '✅ Approved' : '❌ Rejected') + ' by @' + $('Parse Slack Payload').first().json.reviewer, replace_original: true }) }}",
+        "options": {}
+      },
+      "id": "http-update-slack-message",
+      "name": "Update Slack Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Slack Interactivity Webhook": {
+      "main": [[{ "node": "Acknowledge (within 3s)", "type": "main", "index": 0 }]]
+    },
+    "Acknowledge (within 3s)": {
+      "main": [[{ "node": "Parse Slack Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Slack Payload": {
+      "main": [[{ "node": "Submit Review to API", "type": "main", "index": 0 }]]
+    },
+    "Submit Review to API": {
+      "main": [[{ "node": "Update Slack Message", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "content-pipeline-error-handler"
+  }
+}

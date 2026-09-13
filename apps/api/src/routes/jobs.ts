@@ -58,7 +58,13 @@ jobsRouter.get("/:id", async (req, res, next) => {
   try {
     const job = await prisma.job.findUnique({
       where: { id: req.params.id },
-      include: { scenes: true, assets: true, attempts: true, reviews: true },
+      include: {
+        scenes: { orderBy: { order: "asc" } },
+        assets: true,
+        attempts: { orderBy: { createdAt: "asc" } },
+        reviews: { orderBy: { createdAt: "asc" } },
+        costEvents: true,
+      },
     });
     if (!job) {
       return res.status(404).json({ error: "job not found" });

@@ -7,22 +7,27 @@ n8n is the real orchestrator (webhook/Slack triggers, branching, retries) — it
 ## Architecture
 
 ```text
-Slack / Web UI / MCP client (Claude Desktop)
-                │
-                ▼
+Slack ──────────┐
+                 │ (webhook trigger + interactivity)
+                 ▼
         n8n (self-hosted, Docker)
-                │  HTTP calls out to:
-  ┌─────────────┼───────────────────┐
-  ▼              ▼                  ▼
-MCP Server    Node/TS API      BullMQ workers (Redis)
-                │
-                ▼
-           PostgreSQL (+ pgvector, later)
-                ▼
-        Next.js review dashboard
-                ▼
-     Delivery: S3/MinIO, Slack, Google Drive
+                 │
+                 ▼
+Claude Desktop ──────────►  Node/TS API (apps/api)  ◄────────── Next.js dashboard
+  (MCP Server)                     │                            (apps/dashboard)
+                                    ▼
+                          BullMQ workers (Redis)
+                        script → scene-plan → image/tts/music
+                              → render-prep → render (FFmpeg)
+                                    │
+                                    ▼
+                    PostgreSQL  +  MinIO/S3 (assets, final renders)
+                                    │
+                                    ▼
+                  Delivery: Slack notification, Google Drive (planned)
 ```
+
+Everything — n8n, the MCP server, the dashboard — is a client of the same `apps/api`. None of them talk to Postgres or the queue directly; that's deliberate, so business logic and validation live in exactly one place.
 
 Full build plan and stage-by-stage roadmap: see the project's plan history. Current status:
 - **Stage 0/1**: Postgres schema + a working job-creation/status API.
@@ -38,7 +43,13 @@ Full build plan and stage-by-stage roadmap: see the project's plan history. Curr
 
   **Honest limitation:** this n8n instance already had an owner account set up from earlier work outside this session, and I didn't have those credentials — so unlike every other stage, this one is **not verified against a live n8n import**. The workflow JSON is syntax-valid and the node graph/expressions were hand-built as carefully as Stages 1-6's actual running code, but n8n's exact node parameter schemas (particularly the `if` node's filter shape) weren't confirmed against a live editor. Expect to need a short pass in the n8n UI after import — normal for hand-authored workflow JSON, not a sign anything is fundamentally wrong.
 
-Everything past that (dashboard) is scaffolded in the repo layout but not yet implemented.
+- **Stage 8**: `apps/dashboard` — Next.js 16 (App Router) + Tailwind + shadcn/ui review dashboard: a job list with status filters, a job detail view (script, scenes with their image/audio, final render players, QA/attempt history, per-stage cost breakdown), a new-job form, and Approve/Reject/Regenerate actions — all calling `apps/api` the same way the MCP server and n8n do. Also verified with real browser automation (Playwright), not just a type-check.
+
+  **A real bug this caught, worth calling out on its own:** the initial Approve/Reject implementation put two submit buttons in one form, each carrying a different `name`/`value` pair (`decision=APPROVED` vs `decision=REJECTED`) to a shared Server Action — a completely standard HTML pattern. Live testing showed a hydration-mismatch warning revealing that Next.js's Server Actions runtime *itself* rewrites a submitter button's `name` attribute to its own internal `$ACTION_ID_...` dispatch key, silently discarding the `name="decision"` I'd set. Both buttons were submitting with no usable decision field, and the reviews were failing with a 500 — invisible from a type-check or a glance at the code, only found by actually clicking the buttons and watching the real backend state. Fixed with Next's documented pattern for this exact case: `reviewAction.bind(null, "APPROVED")` / `.bind(null, "REJECTED")` as each button's own `formAction`, binding the decision into the action itself instead of fighting the framework for the button's `name`.
+
+  Also worth noting: this generation of `shadcn/ui` has moved off Radix onto `@base-ui/react`, with a different polymorphic-prop API (`render` instead of `asChild`) — caught by reading the actual generated component source before using it, not assumed from prior shadcn/Radix experience. Three of the CLI's own installs (`@base-ui/react`, `tw-animate-css`, and the `shadcn` package itself, imported from `globals.css`) silently failed to actually land in `package.json`/`node_modules` despite the CLI reporting success — same install-verification issue hit repeatedly with `npm install -w` earlier in this project, just via a different tool this time. Installed explicitly and confirmed resolvable before trusting it.
+
+Every stage in the build plan is now implemented.
 
 ### Setting up the n8n workflows
 
@@ -56,6 +67,14 @@ Everything past that (dashboard) is scaffolded in the repo layout but not yet im
      -d '{"brief":"15s vertical UGC ad for a reusable water bottle","format":"VERTICAL"}'
    ```
    This should return immediately with a `jobId`, and the workflow keeps polling in the background — check `apps/api`'s job status endpoint or the n8n execution log to confirm it's progressing.
+
+### Running the dashboard
+
+```bash
+npm run dev -w apps/dashboard
+```
+
+Needs `apps/api` running (it's a client of the same API everything else uses). Opens on `http://localhost:3000` — `/` for the job list, `/new` to create a job, `/jobs/:id` for the detail/review view.
 
 ### Connecting to Claude Desktop
 
@@ -103,7 +122,7 @@ npx tsx src/smoke-test.ts llm     # or: image | tts | music
 apps/
   api/            Express + TS + Zod + Prisma — REST API, job state machine
   worker/         (planned) BullMQ workers
-  dashboard/      (planned) Next.js review UI
+  dashboard/      Next.js review UI — job list, detail view, approve/reject/regenerate
   mcp-server/     MCP server exposing job/review tools to Claude clients
 packages/
   db/             Prisma schema + generated client

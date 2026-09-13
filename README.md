@@ -32,7 +32,26 @@ Full build plan and stage-by-stage roadmap: see the project's plan history. Curr
 - **Stage 4**: FFmpeg render module (`apps/worker/src/render`) — per-scene Ken Burns motion + burned-in captions + narration audio, concatenated, background music mixed in, output at 9:16 and/or 16:9. For `format: "BOTH"`, the 16:9 variant is derived from the same source image via a blurred-background pad rather than a second image-generation call. Verified end-to-end with synthetic fixtures (`npx tsx src/render/smoke-test.ts` in `apps/worker`) — real ffprobe-confirmed output (correct resolution, codecs, duration) and visually inspected frames, not just "the job didn't crash."
 - **Stage 5**: `apps/worker/src/qa` — a `review_gate()` retry-with-feedback loop wired into all four generation stages (script, image, TTS, final render). This is deliberately a *second*, distinct retry axis from Stage 3's BullMQ transport retries: BullMQ retries when the API call itself throws (network/auth errors); `review_gate()` retries when the call succeeds but the *output* fails QA (empty script, an NSFW-flagged image, a truncated audio clip, a render with the wrong resolution/duration) — regenerating with the validator's own feedback each time, not blindly repeating. Every attempt, pass or fail, is a durable row in `attempts` under its own gate name (`script_qa`, `image_qa`, `tts_qa`, `render_qa`) so it stays distinguishable from the Stage 3 transport-retry rows. Exhausting a gate flips the job straight to `FAILED` rather than triggering another outer BullMQ retry of an already-exhausted regeneration loop. On a full pass, `render_qa` is what actually advances a job from `RENDERING`/`QA` to `REVIEW` — human review only ever sees output that already passed automated QA. Verified with a dedicated mechanics smoke test (`npx tsx src/qa/smoke-test.ts`: proves feedback threading, pass-after-failures, and exhaustion) plus the full Stage 4 fixture re-run, which now correctly lands at `REVIEW` after both variants pass `render_qa`.
 
-Everything past that (MCP server, n8n workflow, dashboard) is scaffolded in the repo layout but not yet implemented.
+- **Stage 6**: `apps/mcp-server` — a real MCP server (`@modelcontextprotocol/server` v2) exposing six tools (`create_job`, `get_job_status`, `list_pending_reviews`, `approve_review`, `reject_review`, `trigger_regeneration`) that a Claude client can call directly. Deliberately built as a thin API client, not a reimplementation — it calls `apps/api`'s own REST endpoints (including two new ones added for this stage: `POST /jobs/:id/review` and `POST /jobs/:id/regenerate`) rather than touching Postgres itself, so the MCP server, the REST API, and any future n8n workflow all go through the same business logic and validation. Verified with a real MCP client over stdio (`npx tsx src/smoke-test.ts` in `apps/mcp-server`) driving the full lifecycle against the live API and database — including the background worker picking up a regenerated job mid-test, and a deliberate error case (approving a job that isn't awaiting review) correctly surfacing as `isError: true` with the real API's message.
+
+Everything past that (n8n workflow, dashboard) is scaffolded in the repo layout but not yet implemented.
+
+### Connecting to Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ai-content-production-pipeline": {
+      "command": "npx",
+      "args": ["tsx", "/absolute/path/to/apps/mcp-server/src/index.ts"]
+    }
+  }
+}
+```
+
+Requires `apps/api` (and Postgres/Redis) running separately — the MCP server is a client of that API, not a replacement for it.
 
 ### Local prerequisites
 
@@ -64,7 +83,7 @@ apps/
   api/            Express + TS + Zod + Prisma — REST API, job state machine
   worker/         (planned) BullMQ workers
   dashboard/      (planned) Next.js review UI
-  mcp-server/     (planned) MCP server
+  mcp-server/     MCP server exposing job/review tools to Claude clients
 packages/
   db/             Prisma schema + generated client
   providers/      LLM/image/TTS/music provider abstraction (Claude, fal.ai, Google TTS, Freesound)

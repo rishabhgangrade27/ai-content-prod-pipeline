@@ -15,6 +15,10 @@ apps/dashboard/.next/
 
 .claude/
 
+# Personal dev notes — local only, never published, never committed.
+/scratchpad.md
+/notes.md
+
 # Reference-only repos used for research during Phase One analysis — never
 # part of this project's own codebase. Several have no license or an
 # explicitly restrictive one; must not enter this repo's history.

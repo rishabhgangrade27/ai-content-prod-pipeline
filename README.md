@@ -165,7 +165,4 @@ Provider adapters are configured through environment variables. Before sending r
 
 ## Current limitations
 
-- No public hosted deployment is provided.
-- n8n workflow JSON has not been live-imported and executed for verification.
 - A complete provider-backed generation-to-review run is not demonstrated as a public live service.
-- Google Drive delivery and pgvector/RAG are not implemented.

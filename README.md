@@ -162,7 +162,3 @@ Add an MCP server entry to `claude_desktop_config.json` using the absolute path 
 ## Provider and data-safety notes
 
 Provider adapters are configured through environment variables. Before sending real client material, independently review the current data-retention, training, licensing, and commercial-use terms for each provider. Use synthetic/demo briefs until that review is complete. Never commit API keys, private client data, generated private assets, or populated local environment files.
-
-## Current limitations
-
-- A complete provider-backed generation-to-review run is not demonstrated as a public live service.
